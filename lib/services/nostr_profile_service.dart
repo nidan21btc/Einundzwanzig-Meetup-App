@@ -50,8 +50,12 @@ class NostrProfileService {
         'wss://nostr.einundzwanzig.space',
       ];
     }
+    // Manche Profile werden nur an Profil-Relays verteilt. Diesen Relay nur
+    // fuer den Profilbild-Abruf nutzen, nicht fuer die App-weite Relay-Liste.
+    const profileRelay = 'wss://purplepag.es';
+    if (!relays.contains(profileRelay)) relays = [...relays, profileRelay];
 
-    // Parallel über alle Relays abfragen — das erste Treffer-Bild gewinnt.
+    // Parallel ueber alle Relays abfragen — das erste Treffer-Bild gewinnt.
     // Die Fehlerbehandlung muss BEIM ERSTELLEN im Future stecken, nicht erst
     // in der Schleife weiter unten: die Abfragen laufen ab hier gleichzeitig,
     // und bricht eine ab, bevor die sequentielle Schleife bei ihr angekommen
@@ -65,15 +69,23 @@ class NostrProfileService {
         return null;
       }
     }).toList();
-    for (final f in futures) {
-      final picture = await f;
-      if (picture != null && picture.isNotEmpty) {
-        await prefs.setString(cacheKey, picture);
-        await prefs.setInt(cacheTimeKey, now);
-        return picture;
-      }
+    final result = Completer<String?>();
+    var remaining = futures.length;
+    for (final future in futures) {
+      future.then((picture) {
+        if (picture != null && picture.isNotEmpty && !result.isCompleted) {
+          result.complete(picture);
+        }
+        remaining--;
+        if (remaining == 0 && !result.isCompleted) result.complete(null);
+      });
     }
-    return null;
+    final picture = await result.future;
+    if (picture != null) {
+      await prefs.setString(cacheKey, picture);
+      await prefs.setInt(cacheTimeKey, now);
+    }
+    return picture;
   }
 
   /// Anzeigename zu einem Pubkey, null wenn keiner hinterlegt ist.
@@ -486,5 +498,4 @@ class NostrProfileService {
     await prefs.remove(_localPicKey);
   }
 }
-
 
