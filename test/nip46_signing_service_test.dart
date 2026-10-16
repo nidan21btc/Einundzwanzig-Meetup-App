@@ -7,10 +7,13 @@
 // Funktion darf sich nicht auf einem der beiden Wege anders verhalten, und
 // nur die Fehlertexte unterscheiden sich.
 
+import 'package:einundzwanzig_meetup_app/services/nip46/client_metadata.dart';
+import 'package:einundzwanzig_meetup_app/services/nip46/nip46_client.dart';
 import 'package:einundzwanzig_meetup_app/services/nip46/nip46_exception.dart';
 import 'package:einundzwanzig_meetup_app/services/signing_service.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:nostr/nostr.dart' show Event, Keychain;
 import 'package:shared_preferences/shared_preferences.dart';
 
 const _mine =
@@ -101,24 +104,51 @@ void main() {
 
   group('Signer: guter Fall', () {
     test('uebernimmt id, sig, created_at und normalisierte Tags', () async {
-      final signed = await signerReturning(
-        reply(tags: [
-          ['d', 'badge'],
-          ['client', 'nsec.app']
-        ]),
+      final kc = Keychain.generate();
+      final tags = [
+        ['d', 'badge'],
+        ['client', 'nsec.app'],
+      ];
+      final event = Event.from(
+        kind: 21000,
+        tags: tags,
+        content: 'Badge',
+        privkey: kc.private,
+        createdAt: 1786000000,
+      );
+      final signed = await Nip46NostrSigner(
+        expectedPubkeyHex: kc.public,
+        clientProvider: () async =>
+            throw StateError('darf im Test nicht gerufen werden'),
+        debugSignFn: (_) async => {
+          'id': event.id,
+          'pubkey': event.pubkey,
+          'created_at': event.createdAt,
+          'kind': event.kind,
+          'tags': event.tags,
+          'content': event.content,
+          'sig': event.sig,
+        },
       ).signEvent(kind: 21000, tags: [
         ['d', 'badge']
       ], content: 'Badge');
 
-      expect(signed.id, _eventId);
-      expect(signed.sig, _sig);
+      expect(signed.id, event.id);
+      expect(signed.sig, event.sig);
       expect(signed.createdAt, 1786000000);
-      expect(signed.tags, [
-        ['d', 'badge'],
-        ['client', 'nsec.app'],
-      ]);
+      expect(signed.tags, tags);
       expect(signed.kind, 21000);
       expect(signed.content, 'Badge');
+    });
+
+    test('Platzhaltersignatur wird abgewiesen', () async {
+      await expectLater(
+        signerReturning(reply()).signEvent(
+            kind: 21000, tags: [
+          ['d', 'badge']
+        ], content: 'Badge'),
+        throwsA(isA<SigningException>()),
+      );
     });
   });
 
@@ -300,6 +330,51 @@ void main() {
   // genau das ist in der Praxis passiert: ein ausgefallenes relay.damus.io
   // stand danach in der Bunker-Datenbank und war ohne neue Verbindung nicht
   // mehr wegzukriegen.
+  group('Metadaten im tatsaechlichen Kopplungsablauf', () {
+    test('QR-Adresse enthaelt Name, Symbol, URL und die aktive Sitzung',
+        () async {
+      SharedPreferences.setMockInitialValues({});
+      final pairing = await SigningService.startNip46Pairing();
+      addTearDown(pairing.cancel);
+
+      final uri = Uri.parse(pairing.uri);
+      expect(uri.scheme, 'nostrconnect');
+      expect(uri.host, pairing.client.clientPubkeyHex);
+      expect(uri.queryParameters['secret'], pairing.secret);
+      expect(uri.queryParameters['perms'], Nip46Client.requestedPerms);
+      expect(uri.queryParametersAll['relay'], pairing.relays);
+      expect(uri.queryParameters['name'], 'Einundzwanzig Meetup');
+      expect(pairing.uri, contains('name=Einundzwanzig%20Meetup'));
+      expect(uri.queryParameters['url'], Nip46ClientMetadata.url);
+      expect(uri.queryParameters['image'], Nip46ClientMetadata.image);
+      expect(Uri.parse(uri.queryParameters['image']!).scheme, 'https');
+      expect(pairing.uri, isNot(contains(pairing.clientSecretKeyHex)),
+          reason: 'Der private Sitzungsschluessel darf nicht im QR-Code stehen');
+    });
+
+    test('neue Kopplung behaelt Metadaten, erneuert aber Sitzung und Geheimnis',
+        () async {
+      SharedPreferences.setMockInitialValues({});
+      final first = await SigningService.startNip46Pairing();
+      addTearDown(first.cancel);
+      final second = await SigningService.startNip46Pairing();
+      addTearDown(second.cancel);
+
+      expect(second.secret, isNot(first.secret));
+      expect(second.client.clientPubkeyHex,
+          isNot(first.client.clientPubkeyHex));
+      final firstParams = Uri.parse(first.uri).queryParameters;
+      final secondParams = Uri.parse(second.uri).queryParameters;
+      for (final key in ['name', 'url', 'image']) {
+        expect(secondParams[key], firstParams[key]);
+      }
+      await first.cancel();
+      await second.cancel();
+      expect(await SigningService.getMode(), SigningMode.local,
+          reason: 'Abgebrochene Kopplung darf keine Sitzung aktivieren');
+    });
+  });
+
   group('Relays fuer die Kopplung folgen den Einstellungen', () {
     test('abgewaehltes Relay kommt NICHT in die Kopplungsadresse', () async {
       SharedPreferences.setMockInitialValues({

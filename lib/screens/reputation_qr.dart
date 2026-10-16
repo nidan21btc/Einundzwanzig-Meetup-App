@@ -24,6 +24,7 @@ import '../services/platform_proof_service.dart';
 import 'package:crypto/crypto.dart';
 import 'qr_scanner.dart';
 import 'reputation_card_screen.dart';
+import '../utils/share_origin.dart';
 
 class ReputationQRScreen extends StatefulWidget {
   const ReputationQRScreen({super.key});
@@ -211,6 +212,8 @@ class _ReputationQRScreenState extends State<ReputationQRScreen> {
       if (byteData == null) return;
 
       final pngBytes = byteData.buffer.asUint8List();
+      if (!mounted) return;
+      final shareOrigin = shareOriginFor(context);
 
       // Die Bytes direkt teilen, statt selbst eine Datei in
       // getTemporaryDirectory() zu schreiben: path_provider hat keine
@@ -221,12 +224,13 @@ class _ReputationQRScreenState extends State<ReputationQRScreen> {
       // `fileNameOverrides` auf den nativen Plattformen — cross_file
       // ignoriert `name` dort.
       const fileName = 'einundzwanzig_reputation.png';
-      await Share.shareXFiles(
-        [XFile.fromData(pngBytes, mimeType: 'image/png', name: fileName)],
+      await SharePlus.instance.share(ShareParams(
+        files: [XFile.fromData(pngBytes, mimeType: 'image/png', name: fileName)],
         fileNameOverrides: const [fileName],
         subject: 'Einundzwanzig Reputation',
         text: shareText,
-      );
+        sharePositionOrigin: shareOrigin,
+      ));
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -304,10 +308,14 @@ class _ReputationQRScreenState extends State<ReputationQRScreen> {
           IconButton(
             icon: const Icon(Icons.ios_share_rounded, color: cTextSecondary),
             tooltip: AppLocalizations.of(context).rcShareImage,
-            onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (context) => const ReputationCardScreen()),
-            ),
+            // Unlesbare Sammlung: Keine Karte teilen, die "keine Daten"
+            // behaupten wuerde — der Hinweis steht stattdessen auf der Seite.
+            onPressed: MeetupBadge.badgesUnreadable
+                ? null
+                : () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (context) => const ReputationCardScreen()),
+                  ),
           ),
           IconButton(
             icon: const Icon(Icons.qr_code_scanner, color: cTextSecondary),
@@ -376,12 +384,17 @@ class _ReputationQRScreenState extends State<ReputationQRScreen> {
           ),
           const SizedBox(height: 24),
           Text(
-            AppLocalizations.of(context).reputationNoBadges,
+            MeetupBadge.badgesUnreadable
+                ? AppLocalizations.of(context).badgesUnreadableBody
+                : AppLocalizations.of(context).reputationNoBadges,
+            textAlign: TextAlign.center,
             style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w800, letterSpacing: 1),
           ),
           const SizedBox(height: 12),
           Text(
-            AppLocalizations.of(context).reputationBuildHint1 +
+            MeetupBadge.badgesUnreadable
+                ? ''
+                : AppLocalizations.of(context).reputationBuildHint1 +
             AppLocalizations.of(context).reputationBuildHint2,
             textAlign: TextAlign.center,
             style: TextStyle(color: Colors.grey.shade500, fontSize: 14, height: 1.5),

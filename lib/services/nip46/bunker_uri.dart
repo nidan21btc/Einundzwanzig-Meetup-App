@@ -94,12 +94,18 @@ class BunkerPointer {
     required String secret,
     required String perms,
     required String appName,
+    String? appUrl,
+    String? appImage,
   }) {
     final params = <String>[
       for (final r in relays) 'relay=${Uri.encodeQueryComponent(r)}',
       'secret=${Uri.encodeQueryComponent(secret)}',
       'perms=${Uri.encodeQueryComponent(perms)}',
-      'name=${Uri.encodeQueryComponent(appName)}',
+      // Native URI-Parser behandeln '+' nicht zwingend als Leerzeichen.
+      // Prozentkodierung (%20) funktioniert auch ohne Formular-Dekodierung.
+      'name=${Uri.encodeComponent(appName)}',
+      if (appUrl != null) 'url=${Uri.encodeQueryComponent(appUrl)}',
+      if (appImage != null) 'image=${Uri.encodeQueryComponent(appImage)}',
     ];
     return 'nostrconnect://$clientPubkeyHex?${params.join('&')}';
   }
@@ -122,8 +128,11 @@ class BunkerPointer {
     return key;
   }
 
-  static bool _isRelayUrl(String value) =>
-      value.startsWith('wss://') || value.startsWith('ws://');
+  // Nur wss:// (Security Audit N2): ws:// legt Metadaten und
+  // Verfügbarkeit des Signer-Relays offen. Die Nutzlast bleibt zwar
+  // NIP-44-verschlüsselt, aber wer den Relay-Verkehr beobachtet oder
+  // unterbricht, kann den Bunker unbrauchbar machen.
+  static bool _isRelayUrl(String value) => value.startsWith('wss://');
 
   static bool _isHex(String value) {
     for (final c in value.codeUnits) {

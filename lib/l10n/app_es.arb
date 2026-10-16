@@ -106,6 +106,16 @@
   "settingsSectionAccount": "CUENTA",
   "settingsBackup": "Crear copia de seguridad",
   "settingsBackupSub": "Protege tu cuenta",
+  "settingsBackupLoad": "Cargar copia de seguridad",
+  "settingsBackupLoadSub": "Completa tu colección desde una copia",
+  "backupReplaceTitle": "La copia reemplaza esta identidad",
+  "backupReplaceBody": "Este dispositivo está configurado con {existing}. La copia pertenece a {backup}. La clave, el perfil y las insignias se reemplazan cuando la colección nueva ya está guardada. La colección anterior permanece en este dispositivo, en Colecciones anteriores. Su clave no: crea antes una copia, si no se pierde.",
+  "backupAddUnknownTitle": "Copia sin identidad",
+  "backupAddUnknownBody": "Esta copia no nombra una identidad Nostr. Las insignias y los campos de perfil vacíos se añaden a {existing}. Lo que ya está, se queda.",
+  "backupAddUnknownConfirm": "Añadir",
+  "backupMergeAdded": "{count} insignias añadidas",
+  "backupMergeSame": "Colecciones unidas, sin insignias nuevas",
+  "backupReplaceConfirm": "Reemplazar",
   "settingsLanguageTitle": "Idioma",
   "settingsLanguageChoose": "Elegir idioma",
   "settingsRelays": "Relays Nostr",
@@ -1788,6 +1798,7 @@
   "rsvpMaybe": "Quizás",
   "evOpenLink": "Abrir enlace",
   "evShare": "Compartir",
+  "evShareCopied": "Evento copiado al portapapeles",
   "evToCalendar": "Añadir al calendario",
   "portalConnected": "Portal conectado",
   "portalLoginPrompt": "Te conectamos al portal para confirmar.",
@@ -1925,6 +1936,19 @@
     }
   },
   "walletCleanupDone": "{count} duplicados eliminados.",
+  "walletFormerTitle": "Colecciones anteriores",
+  "walletFormerNone": "No hay colecciones anteriores.",
+  "walletFormerHint": "Lo que se apartó al cambiar, como copia antigua o al vaciar se queda aquí. Fusionar hace las insignias parte de la identidad activa y las sincroniza. Se conservan como máximo las diez últimas.",
+  "walletFormerMergeTitle": "¿Añadir a la identidad actual?",
+  "walletFormerMergeBody": "Estas insignias pasan a tu identidad actual y se sincronizan con ella. La colección anterior sigue en el archivo.",
+  "walletFormerEntry": "{count} insignias",
+  "walletFormerUnreadable": "No legible, sin clave que coincida",
+  "walletFormerReasonReplaced": "Reemplazada al cambiar de identidad",
+  "walletFormerReasonRotated": "Copia más antigua",
+  "walletFormerReasonCleared": "Vaciada",
+  "walletFormerMerge": "Fusionar",
+  "walletFormerMerged": "{count} insignias fusionadas.",
+  "walletFormerMergeFailed": "No se pudo fusionar.",
   "@walletCleanupDone": {
     "placeholders": {
       "count": {
@@ -2074,6 +2098,7 @@
   "newsWriteArticle": "Escribir un artículo",
   "newsLike": "Me gusta",
   "newsShare": "Compartir",
+  "newsShareCopied": "Enlace copiado al portapapeles",
   "newsLikeFailed": "No se pudo enviar la reacción. Ningún relé la aceptó.",
   "newsZap": "Zap",
   "newsZapTitle": "Enviar sats al autor",
@@ -2834,5 +2859,9 @@
   "curCAD": "Dólar canadiense",
   "curAUD": "Dólar australiano",
   "curJPY": "Yen japonés",
-  "chatOffline": "Sin conexión a internet: el chat no está disponible ahora. Revisa el Wi-Fi o los datos móviles e inténtalo de nuevo."
+  "chatOffline": "Sin conexión a internet: el chat no está disponible ahora. Revisa el Wi-Fi o los datos móviles e inténtalo de nuevo.",
+  "badgesUnreadableShort": "Ilegibles — nada borrado",
+  "badgesUnreadableBody": "No se han podido leer tus insignias. No se ha borrado nada. No restablezcas la app ni restaures una copia vacía.",
+  "badgesHeldAside": "Esta insignia queda apartada y se añadirá cuando la colección vuelva a poder leerse.",
+  "badgeSaveFailed": "No se pudo guardar la insignia. No se ha borrado nada — inténtalo de nuevo más tarde."
 }

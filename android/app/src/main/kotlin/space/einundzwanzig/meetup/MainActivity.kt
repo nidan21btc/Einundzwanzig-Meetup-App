@@ -7,7 +7,8 @@ import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.net.Uri
 import android.os.Bundle
-import io.flutter.embedding.android.FlutterActivity
+import android.view.WindowManager
+import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import org.json.JSONArray
@@ -27,7 +28,10 @@ import org.json.JSONObject
 // Der private Schlüssel verlässt Amber dabei niemals.
 // ============================================
 
-class MainActivity : FlutterActivity() {
+// local_auth verlangt eine FragmentActivity. FlutterActivity allein
+// liefert auf Android no_fragment_activity, und die Schlüsselanzeige
+// bricht dann still ab (ScreenSecure.authenticate gibt false zurück).
+class MainActivity : FlutterFragmentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         applyPhoneOrientation(resources.configuration)
@@ -62,10 +66,12 @@ class MainActivity : FlutterActivity() {
     // Stattdessen schreibt die WidgetRouterActivity das Ziel in den
     // lokalen Speicher; Dart fragt es bei jedem Aufwachen hier ab.
     private val widgetChannelName = "einundzwanzig/widget"
+    private val screenChannelName = "einundzwanzig/screen"
 
     // Request-Codes für die Vordergrund-Intents
     private val reqGetPublicKey = 9551
     private val reqSignEvent = 9552
+    private val reqNip44 = 9553
 
     // Pending Flutter-Result, das auf onActivityResult wartet
     private var pendingResult: MethodChannel.Result? = null
@@ -88,6 +94,23 @@ class MainActivity : FlutterActivity() {
                 }
             }
 
+        // Screenshot-Sperre, solange ein nsec oder ncryptsec auf dem Schirm steht.
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, screenChannelName)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "setSecure" -> {
+                        val on = call.argument<Boolean>("on") == true
+                        if (on) {
+                            window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+                        } else {
+                            window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+                        }
+                        result.success(null)
+                    }
+                    else -> result.notImplemented()
+                }
+            }
+
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
@@ -102,6 +125,28 @@ class MainActivity : FlutterActivity() {
                             result.error("bad_args", "event/npub fehlen", null)
                         } else {
                             signEvent(eventJson, npub, result)
+                        }
+                    }
+
+                    "nip44Encrypt" -> {
+                        val pubkey = call.argument<String>("pubkey")
+                        val plaintext = call.argument<String>("plaintext")
+                        val npub = call.argument<String>("npub")
+                        if (pubkey == null || plaintext == null || npub == null) {
+                            result.error("bad_args", "pubkey/plaintext/npub fehlen", null)
+                        } else {
+                            nip44("nip44_encrypt", pubkey, plaintext, npub, result)
+                        }
+                    }
+
+                    "nip44Decrypt" -> {
+                        val pubkey = call.argument<String>("pubkey")
+                        val payload = call.argument<String>("plaintext")
+                        val npub = call.argument<String>("npub")
+                        if (pubkey == null || payload == null || npub == null) {
+                            result.error("bad_args", "pubkey/plaintext/npub fehlen", null)
+                        } else {
+                            nip44("nip44_decrypt", pubkey, payload, npub, result)
                         }
                     }
 
@@ -163,8 +208,13 @@ class MainActivity : FlutterActivity() {
         intent.`package` = amberPackage
         intent.putExtra("type", "get_public_key")
 
-        // Dauer-Berechtigung anfragen → spätere Signaturen ohne Popup
-        val perms = JSONArray().put(JSONObject().put("type", "sign_event"))
+        // Dauer-Berechtigung anfragen → spätere Signaturen ohne Popup.
+        // nip44_encrypt/decrypt gehören dazu, sonst schlägt der Badge-Sync
+        // mit "Keine Berechtigung für diese Methode" fehl.
+        val perms = JSONArray()
+            .put(JSONObject().put("type", "sign_event"))
+            .put(JSONObject().put("type", "nip44_encrypt"))
+            .put(JSONObject().put("type", "nip44_decrypt"))
         intent.putExtra("permissions", perms.toString())
 
         pendingResult = result
@@ -239,6 +289,66 @@ class MainActivity : FlutterActivity() {
     }
 
     // =============================================
+    // NIP-44 — verschlüsselt für den Badge-Sync, selbes Muster wie sign_event
+    // =============================================
+    private fun nip44(type: String, pubkey: String, value: String, npub: String, result: MethodChannel.Result) {
+        if (!isAmberInstalled()) {
+            result.error("signer_missing", "Amber nicht installiert", null)
+            return
+        }
+
+        // 1) HINTERGRUND-PFAD: ContentResolver, wenn die Berechtigung gemerkt ist.
+        val resolverType = if (type == "nip44_encrypt") "NIP44_ENCRYPT" else "NIP44_DECRYPT"
+        try {
+            val uri = Uri.parse("content://$amberPackage.$resolverType")
+            val cursor = contentResolver.query(
+                uri,
+                arrayOf(value, pubkey, npub),
+                null, null, null
+            )
+            cursor?.use {
+                if (it.moveToFirst()) {
+                    val rejectedIdx = it.getColumnIndex("rejected")
+                    if (rejectedIdx >= 0 && !it.isNull(rejectedIdx)) {
+                        result.error("rejected", "User hat dauerhaft abgelehnt", null)
+                        return
+                    }
+                    val resultIdx = it.getColumnIndex("result")
+                    if (resultIdx >= 0) {
+                        val out = it.getString(resultIdx)
+                        if (out != null) {
+                            result.success(out)
+                            return
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            // kein Resolver-Weg → Intent
+        }
+
+        // 2) VORDERGRUND-PFAD: Intent
+        if (pendingResult != null) {
+            result.error("busy", "Eine Signer-Anfrage läuft bereits", null)
+            return
+        }
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse("nostrsigner:$value"))
+        intent.`package` = amberPackage
+        intent.putExtra("type", type)
+        intent.putExtra("pubkey", pubkey)
+        intent.putExtra("current_user", npub)
+
+        pendingResult = result
+        pendingType = type
+        try {
+            startActivityForResult(intent, reqNip44)
+        } catch (e: Exception) {
+            clearPending()
+            result.error("launch_failed", e.message, null)
+        }
+    }
+
+    // =============================================
     // INTENT-ERGEBNISSE
     // =============================================
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
@@ -273,6 +383,15 @@ class MainActivity : FlutterActivity() {
                     res.error("cancelled", "Kein signiertes Event erhalten", null)
                 } else {
                     res.success(mapOf("event" to signedEvent, "result" to sig))
+                }
+            }
+
+            "nip44_encrypt", "nip44_decrypt" -> {
+                val out = data.getStringExtra("result") ?: data.getStringExtra("signature")
+                if (out.isNullOrBlank()) {
+                    res.error("cancelled", "Kein NIP-44-Ergebnis erhalten", null)
+                } else {
+                    res.success(out)
                 }
             }
 

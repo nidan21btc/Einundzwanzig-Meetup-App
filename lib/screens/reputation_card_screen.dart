@@ -11,6 +11,7 @@ import '../models/user.dart';
 import '../models/badge.dart';
 import '../services/trust_score_service.dart';
 import '../services/badge_claim_service.dart';
+import '../utils/share_origin.dart';
 
 /// Teilbares Reputations-Profil als schön gestaltete Karte.
 /// Export als PNG via RepaintBoundary -> share_plus.
@@ -83,18 +84,21 @@ class _ReputationCardScreenState extends State<ReputationCardScreen> {
         return;
       }
       final pngBytes = byteData.buffer.asUint8List();
+      if (!mounted) return;
+      final shareOrigin = shareOriginFor(context);
 
       // Bytes direkt teilen statt selbst eine Datei zu schreiben —
       // path_provider hat keine Web-Implementierung. share_plus legt die
       // temporaere Datei auf iOS/Android selbst an. `name` greift im Web,
       // `fileNameOverrides` nativ.
       const fileName = 'einundzwanzig_reputation_card.png';
-      await Share.shareXFiles(
-        [XFile.fromData(pngBytes, mimeType: 'image/png', name: fileName)],
+      await SharePlus.instance.share(ShareParams(
+        files: [XFile.fromData(pngBytes, mimeType: 'image/png', name: fileName)],
         fileNameOverrides: const [fileName],
         subject: 'Einundzwanzig Reputation',
         text: shareText,
-      );
+        sharePositionOrigin: shareOrigin,
+      ));
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(

@@ -310,6 +310,42 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsBackupSub => 'Secure your account';
 
   @override
+  String get settingsBackupLoad => 'Load backup';
+
+  @override
+  String get settingsBackupLoadSub => 'Adds to your collection from a backup';
+
+  @override
+  String get backupReplaceTitle => 'Backup replaces this identity';
+
+  @override
+  String backupReplaceBody(String existing, String backup) {
+    return 'This device is set up with $existing. The backup belongs to $backup. Key, profile and badges are replaced once the new collection has been saved. The previous collection stays on this device under Former collections. Its key does not: create a backup first, otherwise it is gone.';
+  }
+
+  @override
+  String get backupAddUnknownTitle => 'Backup without an identity';
+
+  @override
+  String backupAddUnknownBody(String existing) {
+    return 'This backup names no Nostr identity. Badges and empty profile fields will be added to $existing. What you already have stays.';
+  }
+
+  @override
+  String get backupAddUnknownConfirm => 'Add';
+
+  @override
+  String backupMergeAdded(int count) {
+    return '$count badges added';
+  }
+
+  @override
+  String get backupMergeSame => 'Collections merged, no new badges';
+
+  @override
+  String get backupReplaceConfirm => 'Replace';
+
+  @override
   String get settingsLanguageTitle => 'Language';
 
   @override
@@ -3915,6 +3951,9 @@ class AppLocalizationsEn extends AppLocalizations {
   String get evShare => 'Share';
 
   @override
+  String get evShareCopied => 'Event copied to clipboard';
+
+  @override
   String get evToCalendar => 'Add to calendar';
 
   @override
@@ -4264,6 +4303,51 @@ class AppLocalizationsEn extends AppLocalizations {
   String walletCleanupDone(int count) {
     return 'Removed $count duplicates.';
   }
+
+  @override
+  String get walletFormerTitle => 'Former collections';
+
+  @override
+  String get walletFormerNone => 'No former collections.';
+
+  @override
+  String get walletFormerHint =>
+      'What was set aside on a switch, as an older backup or when cleared stays here. Merge makes the badges part of the identity that is active now, and syncs them. At most the last ten are kept.';
+
+  @override
+  String get walletFormerMergeTitle => 'Add to the current identity?';
+
+  @override
+  String get walletFormerMergeBody =>
+      'These badges become part of your current identity and sync with it. The former collection stays in the archive.';
+
+  @override
+  String walletFormerEntry(int count) {
+    return '$count badges';
+  }
+
+  @override
+  String get walletFormerUnreadable => 'Unreadable, no matching key';
+
+  @override
+  String get walletFormerReasonReplaced => 'Replaced on identity switch';
+
+  @override
+  String get walletFormerReasonRotated => 'Older backup copy';
+
+  @override
+  String get walletFormerReasonCleared => 'Cleared';
+
+  @override
+  String get walletFormerMerge => 'Merge';
+
+  @override
+  String walletFormerMerged(int count) {
+    return '$count badges merged.';
+  }
+
+  @override
+  String get walletFormerMergeFailed => 'Merge not possible.';
 
   @override
   String get orgGpsSoftTitle => 'Continue without location?';
@@ -4637,6 +4721,9 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get newsShare => 'Share';
+
+  @override
+  String get newsShareCopied => 'Link copied to clipboard';
 
   @override
   String get newsLikeFailed =>
@@ -6348,4 +6435,19 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get chatOffline =>
       'No internet connection — the chat can\'t be reached right now. Check Wi-Fi or mobile data and try again.';
+
+  @override
+  String get badgesUnreadableShort => 'Unreadable — nothing deleted';
+
+  @override
+  String get badgesUnreadableBody =>
+      'Your badges could not be read. Nothing was deleted. Do not reset the app or restore an empty backup.';
+
+  @override
+  String get badgesHeldAside =>
+      'This badge is set aside and will be added once your collection can be read again.';
+
+  @override
+  String get badgeSaveFailed =>
+      'The badge could not be saved. Nothing was deleted — try again later.';
 }

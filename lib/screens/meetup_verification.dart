@@ -734,12 +734,12 @@ class _MeetupVerificationScreenState extends State<MeetupVerificationScreen> wit
       }
 
       // Badge vorbereiten — noch NICHT speichern (erst nach Bestätigung)
-      // Organisator-Standort aus den unsignierten QR-Feldern la/lo lesen
-      // (Referenz für den 5km-Check beim Bestätigen).
-      _pendingOrgLat = (tagData['la'] as num?)?.toDouble()
-          ?? (normalized['la'] as num?)?.toDouble() ?? 0;
-      _pendingOrgLng = (tagData['lo'] as num?)?.toDouble()
-          ?? (normalized['lo'] as num?)?.toDouble() ?? 0;
+      // Nur signierte Koordinaten gelten als gemessene Referenz.
+      // `la`/`lo` am Rolling-QR sind nicht von der Signatur gedeckt und
+      // ließen sich auf einen beliebigen Ort umschreiben (Security Audit H1).
+      final measured = BadgeSecurity.signedCoordinates(tagData);
+      _pendingOrgLat = measured.lat;
+      _pendingOrgLng = measured.lng;
 
       _pendingBadge = MeetupBadge(
         id: meetupId,
@@ -982,6 +982,23 @@ class _MeetupVerificationScreenState extends State<MeetupVerificationScreen> wit
     // verbindliche Pruefung gegen den TATSAECHLICHEN Speicherstand
     // (nicht nur gegen die evtl. veraltete Liste im Speicher).
     final stored = await MeetupBadge.loadBadges();
+    if (MeetupBadge.badgesUnreadable) {
+      // Klappt die Vormerkung nicht, bleibt der Scan für einen erneuten
+      // Versuch offen statt als "vorgemerkt" gemeldet zu werden.
+      final aside = await MeetupBadge.keepAside(badge);
+      _pendingBadge = aside ? null : badge;
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(aside
+              ? AppLocalizations.of(context).badgesHeldAside
+              : AppLocalizations.of(context).badgeSaveFailed),
+          backgroundColor: aside ? null : cRed,
+          duration: const Duration(seconds: 8),
+          behavior: SnackBarBehavior.floating,
+        ));
+      }
+      return;
+    }
     final key = MeetupBadge.identityKey(badge);
     // Organisator-Marker vom Vergleich ausnehmen (siehe oben): Ein eigener
     // Marker darf das echte Badge desselben Meetups nicht verdraengen.
@@ -1006,7 +1023,25 @@ class _MeetupVerificationScreenState extends State<MeetupVerificationScreen> wit
     }
 
     stored.add(badge);
-    await MeetupBadge.saveBadges(stored);
+    final wrote = await MeetupBadge.saveBadges(stored);
+    if (!wrote) {
+      // Nichts geschrieben: kein Erfolg melden und nichts veröffentlichen,
+      // was nicht liegt. Das Badge best-effort vormerken; klappt auch das
+      // nicht, bleibt der Scan für einen erneuten Versuch offen.
+      final aside = await MeetupBadge.keepAside(badge);
+      _pendingBadge = aside ? null : badge;
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(aside
+              ? AppLocalizations.of(context).badgesHeldAside
+              : AppLocalizations.of(context).badgeSaveFailed),
+          backgroundColor: aside ? null : cRed,
+          duration: const Duration(seconds: 8),
+          behavior: SnackBarBehavior.floating,
+        ));
+      }
+      return;
+    }
     myBadges = stored; // globale Liste synchron halten
     _pendingBadge = null; // Badge ist verbucht — kein zweites Hinzufuegen
     AppLogger.diag('Scan', 'Badge gespeichert ($key). Wallet: ${stored.length} Badge(s).');
@@ -1416,12 +1451,9 @@ class _QRScannerScreenState extends State<_QRScannerScreen> {
 
   Future<void> _pickFromGallery() async {
     try {
-      final result = await FilePicker.platform.pickFiles(
-        type: FileType.image,
-        allowMultiple: false,
-      );
-      if (result == null || result.files.isEmpty) return;
-      final path = result.files.single.path;
+      final picked = await FilePicker.pickFile(type: FileType.image);
+      if (picked == null) return;
+      final path = picked.path;
       if (path == null) return;
 
       final barcodes = await _scannerController.analyzeImage(path);

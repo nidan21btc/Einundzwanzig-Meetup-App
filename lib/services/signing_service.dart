@@ -38,9 +38,11 @@ import 'package:nostr/nostr.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'secure_key_store.dart';
 import 'app_logger.dart';
+import 'nip44.dart';
 import 'nip07/nip07_bridge.dart';
 import 'nip07/nip07_exception.dart';
 import 'nip46/bunker_uri.dart';
+import 'nip46/client_metadata.dart';
 import 'nip46/nip46_client.dart';
 import 'nip46/nip46_exception.dart';
 import 'relay_config.dart';
@@ -181,6 +183,16 @@ abstract interface class NostrSigner {
     required List<List<String>> tags,
     required String content,
   });
+
+  /// NIP-44 an [pubkeyHex]. Nur der Badge-Sync braucht das. Wer es nicht
+  /// kann, wirft [UnsupportedError] — der Sync fällt dann aufs Backup zurück.
+  Future<String> nip44Encrypt(String pubkeyHex, String plaintext) {
+    throw UnsupportedError('$runtimeType kann NIP-44 nicht.');
+  }
+
+  Future<String> nip44Decrypt(String pubkeyHex, String payload) {
+    throw UnsupportedError('$runtimeType kann NIP-44 nicht.');
+  }
 }
 
 // =============================================
@@ -226,6 +238,24 @@ class LocalNostrSigner implements NostrSigner {
       content: content,
       sig: event.sig,
     );
+  }
+
+  Future<Uint8List> _nip44ConversationKey(String pubkeyHex) async {
+    final privHex = await SecureKeyStore.getPrivHex();
+    if (privHex == null || privHex.isEmpty) {
+      throw const SigningException('Kein privater Schlüssel vorhanden.');
+    }
+    return Nip44.conversationKey(privkeyHex: privHex, pubkeyHex: pubkeyHex);
+  }
+
+  @override
+  Future<String> nip44Encrypt(String pubkeyHex, String plaintext) async {
+    return Nip44.encrypt(plaintext, await _nip44ConversationKey(pubkeyHex));
+  }
+
+  @override
+  Future<String> nip44Decrypt(String pubkeyHex, String payload) async {
+    return Nip44.decrypt(payload, await _nip44ConversationKey(pubkeyHex));
   }
 }
 
@@ -384,23 +414,58 @@ class AmberNostrSigner implements NostrSigner {
       throw SigningException('Amber-Antwort nicht lesbar: $e');
     }
 
-    final signedPubkey = (signed['pubkey'] ?? '') as String;
-    // Schutz: Falls der User in Amber zwischenzeitlich das Konto
-    // gewechselt hat, würde sonst eine fremde Signatur akzeptiert.
-    if (signedPubkey.toLowerCase() != expectedPubkeyHex.toLowerCase()) {
-      throw const WrongAccountException();
-    }
-
-    return SignedEvent(
-      id: (signed['id'] ?? '') as String,
-      pubkey: signedPubkey,
-      createdAt: (signed['created_at'] ?? createdAt) as int,
+    // Security Audit N1: Amber ist FREMDER Code wie die Browsererweiterung
+    // oder der Remote-Signer. Dieselbe Prüfung anwenden — Kontowechsel,
+    // veränderter Event-Typ, veränderter Inhalt — statt nur den Pubkey
+    // zu vergleichen. Die Prüfung ist deckungsgleich mit NIP-07/NIP-46,
+    // damit kein Signer schwächer abgesichert ist als ein anderer.
+    return verifySignerResponse(
+      signed: signed,
+      expectedPubkeyHex: expectedPubkeyHex,
       kind: kind,
       tags: tags,
       content: content,
-      sig: (signed['sig'] ?? '') as String,
+      fallbackCreatedAt: createdAt,
+      actor: 'Amber',
     );
   }
+
+  Future<String> _nip44(String type, String pubkeyHex, String value) async {
+    String currentUserNpub;
+    try {
+      currentUserNpub = Nip19.encodePubkey(expectedPubkeyHex);
+    } catch (_) {
+      currentUserNpub = expectedPubkeyHex;
+    }
+    try {
+      final res = await _channel.invokeMethod<String>(type, {
+        'package': amberPackage,
+        'npub': currentUserNpub,
+        'pubkey': pubkeyHex,
+        'plaintext': value,
+      });
+      if (res == null) throw const SigningCancelledException();
+      return res;
+    } on PlatformException catch (e) {
+      switch (e.code) {
+        case 'cancelled':
+        case 'rejected':
+          throw const SigningCancelledException();
+        case 'signer_missing':
+          throw const SignerMissingException();
+        default:
+          throw SigningException('Amber-Fehler: ${e.message ?? e.code}');
+      }
+    }
+  }
+
+  @override
+  Future<String> nip44Encrypt(String pubkeyHex, String plaintext) =>
+      _nip44('nip44Encrypt', pubkeyHex, plaintext);
+
+  @override
+  Future<String> nip44Decrypt(String pubkeyHex, String payload) =>
+      _nip44('nip44Decrypt', pubkeyHex, payload);
 }
 
 // =============================================
@@ -431,7 +496,18 @@ class Nip07NostrSigner implements NostrSigner {
   final Future<Map<String, dynamic>> Function(Map<String, dynamic>)?
       debugSignFn;
 
-  const Nip07NostrSigner({required this.expectedPubkeyHex, this.debugSignFn});
+  @visibleForTesting
+  final Future<String> Function(String, String)? debugNip44EncryptFn;
+
+  @visibleForTesting
+  final Future<String> Function(String, String)? debugNip44DecryptFn;
+
+  const Nip07NostrSigner({
+    required this.expectedPubkeyHex,
+    this.debugSignFn,
+    this.debugNip44EncryptFn,
+    this.debugNip44DecryptFn,
+  });
 
   /// Ist eine NIP-07-Erweiterung vorhanden? Ausserhalb des Browsers false.
   static Future<bool> isAvailable() => nip07Available();
@@ -492,6 +568,30 @@ class Nip07NostrSigner implements NostrSigner {
       actor: 'Die Erweiterung',
     );
   }
+
+  @override
+  Future<String> nip44Encrypt(String pubkeyHex, String plaintext) async {
+    try {
+      return await (debugNip44EncryptFn ?? nip07Nip44Encrypt)(
+          pubkeyHex, plaintext);
+    } on Nip07RejectedException {
+      throw const SigningCancelledException();
+    } on Nip07Exception catch (e) {
+      throw SigningException(e.message);
+    }
+  }
+
+  @override
+  Future<String> nip44Decrypt(String pubkeyHex, String payload) async {
+    try {
+      return await (debugNip44DecryptFn ?? nip07Nip44Decrypt)(
+          pubkeyHex, payload);
+    } on Nip07RejectedException {
+      throw const SigningCancelledException();
+    } on Nip07Exception catch (e) {
+      throw SigningException(e.message);
+    }
+  }
 }
 
 // =============================================
@@ -551,19 +651,45 @@ SignedEvent verifySignerResponse({
     throw SigningException('$actor hat den Inhalt des Events verändert.');
   }
 
+  final id = (signed['id'] ?? '').toString();
+  // created_at der Gegenstelle gewinnt: id und sig sind darüber
+  // berechnet, ein abweichender Wert würde das Event ungültig machen.
+  final createdAt = signed['created_at'] is int
+      ? signed['created_at'] as int
+      : fallbackCreatedAt;
+  final parsedTags = _tagsFromSigned(signed['tags'], tags);
+
+  // Die Felder oben können stimmen und die Signatur trotzdem nicht dazu
+  // gehören. Eine nicht leere Platzhalter-Signatur reicht nicht.
+  var signatureOk = false;
+  try {
+    final event = Event(
+      id,
+      signedPubkey,
+      createdAt,
+      kind,
+      parsedTags,
+      content,
+      sig,
+      verify: false,
+    );
+    signatureOk = event.isValid();
+  } catch (_) {
+    signatureOk = false;
+  }
+  if (!signatureOk) {
+    throw SigningException('$actor hat keine gültige Signatur geliefert.');
+  }
+
   return SignedEvent(
-    id: (signed['id'] ?? '').toString(),
+    id: id,
     pubkey: signedPubkey,
-    // created_at der Gegenstelle gewinnt: id und sig sind darüber
-    // berechnet, ein abweichender Wert würde das Event ungültig machen.
-    createdAt: signed['created_at'] is int
-        ? signed['created_at'] as int
-        : fallbackCreatedAt,
+    createdAt: createdAt,
     // kind und content stammen aus dem Aufruf, nicht aus der Antwort — die
     // Prüfung oben stellt sicher, dass beides übereinstimmt. So steht die
     // Invariante im Code, statt sie aus zwei Stellen erschliessen zu müssen.
     kind: kind,
-    tags: _tagsFromSigned(signed['tags'], tags),
+    tags: parsedTags,
     content: content,
     sig: sig,
   );
@@ -637,10 +763,15 @@ class Nip46NostrSigner implements NostrSigner {
   final Future<Map<String, dynamic>> Function(Map<String, dynamic>)?
       debugSignFn;
 
+  /// NUR für Tests: (methode, pubkey, wert) -> ergebnis.
+  @visibleForTesting
+  final Future<String> Function(String, String, String)? debugNip44Fn;
+
   const Nip46NostrSigner({
     required this.expectedPubkeyHex,
     required this.clientProvider,
     this.debugSignFn,
+    this.debugNip44Fn,
   });
 
   @override
@@ -691,6 +822,33 @@ class Nip46NostrSigner implements NostrSigner {
       actor: 'Der Signer',
     );
   }
+
+  Future<String> _nip44(String method, String pubkeyHex, String value) async {
+    try {
+      final fn = debugNip44Fn;
+      if (fn != null) return await fn(method, pubkeyHex, value);
+      final client = await clientProvider();
+      return method == 'nip44_encrypt'
+          ? await client.nip44Encrypt(pubkeyHex, value)
+          : await client.nip44Decrypt(pubkeyHex, value);
+    } on Nip46TimeoutException {
+      throw const SigningException(
+          'Der Signer hat nicht geantwortet. Ist die Signer-App geöffnet '
+          'und die Freigabe bestätigt?');
+    } on Nip46RemoteException catch (e) {
+      throw SigningException('Der Signer hat abgelehnt: ${e.message}');
+    } on Nip46Exception catch (e) {
+      throw SigningException(e.message);
+    }
+  }
+
+  @override
+  Future<String> nip44Encrypt(String pubkeyHex, String plaintext) =>
+      _nip44('nip44_encrypt', pubkeyHex, plaintext);
+
+  @override
+  Future<String> nip44Decrypt(String pubkeyHex, String payload) =>
+      _nip44('nip44_decrypt', pubkeyHex, payload);
 }
 
 /// Ergebnis eines NIP-46-Verbindungsversuchs.
@@ -901,6 +1059,33 @@ class SigningService {
     return signer.pubkeyHex();
   }
 
+  /// NIP-44 an [pubkeyHex] über den aktiven Signer. Für den Badge-Sync.
+  /// Wirft, wenn der Signer es nicht kann.
+  static Future<String> nip44Encrypt(String pubkeyHex, String plaintext) async {
+    final signer = await _resolveSigner();
+    return signer.nip44Encrypt(pubkeyHex, plaintext);
+  }
+
+  static Future<String> nip44Decrypt(String pubkeyHex, String payload) async {
+    final signer = await _resolveSigner();
+    return signer.nip44Decrypt(pubkeyHex, payload);
+  }
+
+  /// Kann der aktive Signer NIP-44? Eine Probe, die keinen Klartext verrät:
+  /// eigener pubkey, eine kurze Markierung, hin und zurück.
+  static Future<bool> canNip44() async {
+    try {
+      final me = await pubkeyHex();
+      if (me == null || me.isEmpty) return false;
+      const probe = 'e21-nip44-probe';
+      final sealed = await nip44Encrypt(me, probe);
+      final opened = await nip44Decrypt(me, sealed);
+      return opened == probe;
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// npub der aktiven Identität — Amber-npub, Erweiterungs-npub oder
   /// lokaler npub.
   static Future<String?> npub() async {
@@ -958,6 +1143,7 @@ class SigningService {
       await _setMode(SigningMode.amber);
       AppLogger.security('SigningService',
           'Amber verbunden: ${_short(result.npub)} — nsec bleibt in Amber.');
+      _noteSignerReady();
     }
     return result;
   }
@@ -965,6 +1151,7 @@ class SigningService {
   /// Aktiviert den lokalen Modus (nach Key-Generierung/Import).
   static Future<void> useLocalMode() async {
     await _setMode(SigningMode.local);
+    _noteSignerReady();
   }
 
   /// Stellt den Amber-Modus aus einem Backup wieder her.
@@ -975,6 +1162,7 @@ class SigningService {
     await prefs.setString(_amberPubkeyHexKey, hex);
     await prefs.setString(_amberNpubKey, npub.trim());
     await _setMode(SigningMode.amber);
+    _noteSignerReady();
   }
 
   /// Trennt Amber und löscht den gemerkten pubkey.
@@ -1021,6 +1209,7 @@ class SigningService {
       AppLogger.security('SigningService',
           'Browsererweiterung verbunden: ${_short(result.npub)} — '
           'der Schlüssel bleibt in der Erweiterung.');
+      _noteSignerReady();
     }
     return result;
   }
@@ -1033,6 +1222,7 @@ class SigningService {
     await prefs.setString(_nip07PubkeyHexKey, hex);
     await prefs.setString(_nip07NpubKey, npub.trim());
     await _setMode(SigningMode.nip07);
+    _noteSignerReady();
   }
 
   /// Trennt die Erweiterung und löscht den gemerkten pubkey.
@@ -1060,6 +1250,14 @@ class SigningService {
   /// geöffnetes Fenster blockiert der Browser, weil keine Nutzer-Gestik
   /// vorliegt.
   static void Function(String url)? onNip46AuthUrl;
+
+  /// Badge-Sync hängt sich hier ein, sobald eine Identität signieren kann.
+  /// Der Dienst darf nicht importiert werden: er benutzt selbst den Signer.
+  static void Function()? onSignerReady;
+
+  static void _noteSignerReady() {
+    onSignerReady?.call();
+  }
 
   /// Liefert die Sitzung, stellt sie bei Bedarf aus dem Gespeicherten her.
   static Future<Nip46Client> _nip46Session() async {
@@ -1156,6 +1354,7 @@ class SigningService {
           'SigningService',
           'Remote-Signer verbunden: ${_short(npub)} — '
               'der Schlüssel bleibt im Signer.');
+      _noteSignerReady();
       return Nip46ConnectSuccess(pubkeyHex: userPubkeyHex, npub: npub);
     } on Nip46TimeoutException {
       await client?.close();
@@ -1186,7 +1385,9 @@ class SigningService {
         relays: relays,
         secret: secret,
         perms: Nip46Client.requestedPerms,
-        appName: 'Einundzwanzig Meetup',
+        appName: Nip46ClientMetadata.name,
+        appUrl: Nip46ClientMetadata.url,
+        appImage: Nip46ClientMetadata.image,
       ),
       secret: secret,
       clientSecretKeyHex: clientKey,
@@ -1221,6 +1422,7 @@ class SigningService {
           'SigningService',
           'Remote-Signer gekoppelt: ${_short(npub)} — '
               'der Schlüssel bleibt im Signer.');
+      _noteSignerReady();
       return Nip46ConnectSuccess(pubkeyHex: userPubkeyHex, npub: npub);
     } on Nip46TimeoutException {
       await pairing.cancel();
@@ -1353,6 +1555,7 @@ class SigningService {
     await prefs.setString(_nip46NpubKey, Nip19.encodePubkey(hex));
     await prefs.setString(_nip46BunkerUriKey, bunkerUri.trim());
     await _setMode(SigningMode.nip46);
+    _noteSignerReady();
   }
 
   /// Trennt den Remote-Signer und räumt die Sitzung ab.
